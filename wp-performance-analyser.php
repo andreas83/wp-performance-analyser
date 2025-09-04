@@ -139,12 +139,9 @@ class WP_Performance_Analyser {
                 $plugin_data = get_file_data($plugin_file, ['Name' => 'Plugin Name']);
                 $plugin_name = $plugin_data['Name'] ?: basename($plugin, '.php');
                 
-                // Store a baseline timing (we'll improve this with actual measurements)
-                $this->plugin_timings[$plugin_name] = [
-                    'time' => 0.001 + (rand(1, 50) / 1000), // Temporary: random time for testing
-                    'memory' => memory_get_usage(true),
-                    'file' => $plugin
-                ];
+                // For now, we can't accurately measure individual plugin load times
+                // This would require deep WordPress core hooks that don't exist
+                // We'll focus on overall page performance and query analysis instead
             }
         }
     }
@@ -239,6 +236,7 @@ class WP_Performance_Analyser {
             'wppa-settings',
             [$this, 'render_settings_page']
         );
+        
     }
     
     public function enqueue_admin_assets($hook) {
@@ -329,6 +327,37 @@ class WP_Performance_Analyser {
     }
     
     public function render_plugin_performance_page() {
+        ?>
+        <div class="wrap">
+            <h1>Plugin Performance Analysis</h1>
+            
+            <div class="notice notice-info">
+                <p><strong>Note:</strong> Individual plugin performance tracking is technically challenging in WordPress due to how plugins are loaded. 
+                This feature focuses on overall page performance and database query analysis instead.</p>
+                <p>For detailed performance analysis, please use the main Performance dashboard and Query Analysis pages.</p>
+            </div>
+            
+            <h2>Alternative Performance Monitoring</h2>
+            <p>Consider using these approaches for plugin performance analysis:</p>
+            <ul>
+                <li><strong>Query Analysis:</strong> Identify slow database queries and their sources</li>
+                <li><strong>Page Load Times:</strong> Monitor overall page generation times</li>
+                <li><strong>Memory Usage:</strong> Track memory consumption patterns</li>
+                <li><strong>External Tools:</strong> Use profiling tools like Query Monitor, Debug Bar, or New Relic</li>
+            </ul>
+            
+            <p>
+                <a href="<?php echo admin_url('admin.php?page=wp-performance-analyser'); ?>" class="button button-primary">
+                    View Performance Dashboard
+                </a>
+                <a href="<?php echo admin_url('admin.php?page=wppa-query-analysis'); ?>" class="button">
+                    Analyze Database Queries
+                </a>
+            </p>
+        </div>
+        <?php
+        return;
+        
         global $wpdb;
         $table_name = $wpdb->prefix . 'wppa_performance_logs';
         
@@ -699,19 +728,20 @@ class WP_Performance_Analyser {
         global $wpdb;
         $table_name = $wpdb->prefix . 'wppa_performance_logs';
         
-        foreach ($this->plugin_timings as $plugin => $data) {
-            $time = is_array($data) ? $data['time'] : $data;
-            $memory = is_array($data) ? $data['memory'] : 0;
-            
-            $wpdb->insert($table_name, [
-                'page_url' => $_SERVER['REQUEST_URI'],
-                'plugin_name' => $this->get_plugin_name($plugin),
-                'execution_time' => $time,
-                'memory_usage' => $memory,
-                'query_count' => get_num_queries(),
-                'query_time' => $this->get_total_query_time()
-            ]);
-        }
+        // Save overall page performance data instead of individual plugin data
+        $total_time = microtime(true) - $this->start_time;
+        $memory_usage = memory_get_peak_usage(true);
+        $query_count = get_num_queries();
+        $query_time = $this->get_total_query_time();
+        
+        $result = $wpdb->insert($table_name, [
+            'page_url' => $_SERVER['REQUEST_URI'] ?? '/',
+            'plugin_name' => 'Page Load', // Track overall page performance
+            'execution_time' => $total_time,
+            'memory_usage' => $memory_usage,
+            'query_count' => $query_count,
+            'query_time' => $query_time
+        ]);
     }
     
     private function get_total_query_time() {
@@ -806,6 +836,7 @@ class WP_Performance_Analyser {
             }
         }
     }
+    
 }
 
 function wppa_init() {
