@@ -423,7 +423,7 @@ class WP_Performance_Analyser {
             
             <?php if (!defined('SAVEQUERIES') || !SAVEQUERIES): ?>
             <div class="notice notice-warning">
-                <p>Query logging is not enabled. Add <code>define('SAVEQUERIES', true);</code> to your wp-config.php file to enable detailed query analysis.</p>
+                <p>Query logging is not enabled. You can enable it from the <a href="<?php echo admin_url('admin.php?page=wppa-settings'); ?>">Settings page</a> or manually add <code>define('SAVEQUERIES', true);</code> to your wp-config.php file.</p>
             </div>
             <?php endif; ?>
             
@@ -487,16 +487,24 @@ class WP_Performance_Analyser {
     }
     
     public function render_settings_page() {
-        if (isset($_POST['wppa_save_settings'])) {
+        if (isset($_POST['wppa_save_settings']) && wp_verify_nonce($_POST['wppa_settings_nonce'], 'wppa_settings')) {
             update_option('wppa_enable_tracking', isset($_POST['enable_tracking']));
             update_option('wppa_data_retention', intval($_POST['data_retention']));
             update_option('wppa_tracking_sample_rate', intval($_POST['sample_rate']));
+            
+            // Handle SAVEQUERIES setting
+            if (isset($_POST['enable_query_tracking'])) {
+                $this->update_savequeries_constant($_POST['enable_query_tracking'] === '1');
+                update_option('wppa_savequeries_enabled', $_POST['enable_query_tracking'] === '1');
+            }
+            
             echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
         }
         
         $enable_tracking = get_option('wppa_enable_tracking', true);
         $data_retention = get_option('wppa_data_retention', 30);
         $sample_rate = get_option('wppa_tracking_sample_rate', 100);
+        $savequeries_enabled = get_option('wppa_savequeries_enabled', defined('SAVEQUERIES') && SAVEQUERIES);
         ?>
         <div class="wrap">
             <h1>WP Performance Analyser Settings</h1>
@@ -527,6 +535,29 @@ class WP_Performance_Analyser {
                             <input type="number" id="sample_rate" name="sample_rate" 
                                    value="<?php echo $sample_rate; ?>" min="1" max="100">
                             <p class="description">Percentage of requests to track (1-100)</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="enable_query_tracking">Query Tracking (SAVEQUERIES)</label></th>
+                        <td>
+                            <select id="enable_query_tracking" name="enable_query_tracking">
+                                <option value="0" <?php selected(!$savequeries_enabled); ?>>Disabled</option>
+                                <option value="1" <?php selected($savequeries_enabled); ?>>Enabled</option>
+                            </select>
+                            <p class="description">Enable detailed query tracking (SAVEQUERIES constant). This will modify wp-config.php if writable.</p>
+                            <?php if (defined('SAVEQUERIES')): ?>
+                                <p class="description" style="color: <?php echo SAVEQUERIES ? '#46b450' : '#dc3232'; ?>">
+                                    Current status: SAVEQUERIES is <?php echo SAVEQUERIES ? 'ENABLED' : 'DISABLED'; ?>
+                                </p>
+                            <?php else: ?>
+                                <p class="description" style="color: #666;">SAVEQUERIES is not defined in wp-config.php</p>
+                            <?php endif; ?>
+                            <?php if (!is_writable(ABSPATH . 'wp-config.php')): ?>
+                                <p class="description" style="color: #dc3232;">
+                                    Warning: wp-config.php is not writable. You'll need to manually add/modify:<br>
+                                    <code>define('SAVEQUERIES', true);</code>
+                                </p>
+                            <?php endif; ?>
                         </td>
                     </tr>
                 </table>
@@ -651,6 +682,88 @@ class WP_Performance_Analyser {
             }
         }
         return $total;
+    }
+    
+    private function update_savequeries_constant($enable) {
+        $config_path = ABSPATH . 'wp-config.php';
+        
+        if (!file_exists($config_path)) {
+            // Try one directory up
+            $config_path = dirname(ABSPATH) . '/wp-config.php';
+        }
+        
+        if (!file_exists($config_path) || !is_writable($config_path)) {
+            return false;
+        }
+        
+        $config_content = file_get_contents($config_path);
+        
+        // Pattern to match existing SAVEQUERIES definition
+        $pattern = "/define\s*\(\s*['\"]SAVEQUERIES['\"]\s*,\s*(true|false|TRUE|FALSE)\s*\)\s*;/";
+        
+        if (preg_match($pattern, $config_content)) {
+            // Replace existing definition
+            $replacement = $enable ? "define('SAVEQUERIES', true);" : "define('SAVEQUERIES', false);";
+            $config_content = preg_replace($pattern, $replacement, $config_content);
+        } else {
+            // Add new definition before "/* That's all, stop editing!" or at the end
+            $insertion = "\n/* WP Performance Analyser Query Tracking */\ndefine('SAVEQUERIES', " . ($enable ? 'true' : 'false') . ");\n";
+            
+            if (strpos($config_content, "/* That's all, stop editing!") !== false) {
+                $config_content = str_replace(
+                    "/* That's all, stop editing!",
+                    $insertion . "\n/* That's all, stop editing!",
+                    $config_content
+                );
+            } else {
+                // Find the last require_once or similar statement
+                $lines = explode("\n", $config_content);
+                $insert_at = count($lines) - 1;
+                
+                for ($i = count($lines) - 1; $i >= 0; $i--) {
+                    if (strpos($lines[$i], 'require_once') !== false || 
+                        strpos($lines[$i], 'require') !== false ||
+                        strpos($lines[$i], 'include') !== false) {
+                        $insert_at = $i;
+                        break;
+                    }
+                }
+                
+                array_splice($lines, $insert_at, 0, explode("\n", $insertion));
+                $config_content = implode("\n", $lines);
+            }
+        }
+        
+        // Create backup
+        $backup_path = $config_path . '.wppa-backup-' . date('Y-m-d-His');
+        copy($config_path, $backup_path);
+        
+        // Write the updated content
+        if (file_put_contents($config_path, $config_content)) {
+            // Clean up old backups (keep only last 5)
+            $this->cleanup_old_backups(dirname($config_path));
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private function cleanup_old_backups($dir) {
+        $pattern = $dir . '/wp-config.php.wppa-backup-*';
+        $backups = glob($pattern);
+        
+        if (count($backups) > 5) {
+            // Sort by modification time
+            usort($backups, function($a, $b) {
+                return filemtime($a) - filemtime($b);
+            });
+            
+            // Remove oldest backups
+            $to_remove = count($backups) - 5;
+            for ($i = 0; $i < $to_remove; $i++) {
+                @unlink($backups[$i]);
+            }
+        }
     }
 }
 
