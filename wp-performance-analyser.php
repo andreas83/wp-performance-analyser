@@ -149,10 +149,6 @@ class WP_Performance_Analyser {
     }
     
     private function setup_query_tracking() {
-        if (defined('SAVEQUERIES') && SAVEQUERIES) {
-            add_filter('log_query_custom_data', [$this, 'add_query_timing_data'], 10, 5);
-        }
-        
         add_filter('query_vars', function($vars) {
             global $wpdb;
             if (!isset($wpdb->wppa_query_start)) {
