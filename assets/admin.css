@@ -1,0 +1,163 @@
+.wppa-dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.wppa-card {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    box-shadow: 0 1px 1px rgba(0,0,0,.04);
+    padding: 20px;
+}
+
+.wppa-card h2 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.wppa-filters {
+    background: #fff;
+    padding: 15px;
+    margin: 20px 0;
+    border: 1px solid #ccd0d4;
+}
+
+.wppa-filters label {
+    margin-right: 15px;
+}
+
+.wppa-filters select {
+    margin-left: 5px;
+}
+
+.wppa-query-summary,
+.wppa-slow-queries {
+    background: #fff;
+    padding: 20px;
+    margin: 20px 0;
+    border: 1px solid #ccd0d4;
+}
+
+.wppa-query-summary h2,
+.wppa-slow-queries h2 {
+    margin-top: 0;
+}
+
+table.wp-list-table td code {
+    background: #f3f4f5;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.wppa-performance-bar {
+    display: inline-block;
+    height: 20px;
+    background: linear-gradient(90deg, #46b450 0%, #ffb900 50%, #dc3232 100%);
+    border-radius: 3px;
+    position: relative;
+}
+
+.wppa-performance-indicator {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #000;
+}
+
+.notice {
+    margin: 20px 0 15px;
+}
+
+@media screen and (max-width: 782px) {
+    .wppa-dashboard {
+        grid-template-columns: 1fr;
+    }
+}
+
+canvas#wppa-query-chart {
+    max-height: 300px;
+    width: 100% !important;
+}
+
+.wppa-metric-value {
+    font-size: 24px;
+    font-weight: 600;
+    color: #23282d;
+}
+
+.wppa-metric-label {
+    color: #666;
+    font-size: 14px;
+    margin-top: 5px;
+}
+
+.wppa-status-good {
+    color: #46b450;
+}
+
+.wppa-status-warning {
+    color: #ffb900;
+}
+
+.wppa-status-critical {
+    color: #dc3232;
+}
+
+.wppa-loading {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+}
+
+.wppa-loading:before {
+    content: '';
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #ddd;
+    border-radius: 50%;
+    border-top-color: #0073aa;
+    animation: wppa-spin 1s linear infinite;
+    margin-right: 10px;
+    vertical-align: middle;
+}
+
+@keyframes wppa-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.wppa-tooltip {
+    position: relative;
+    cursor: help;
+}
+
+.wppa-tooltip:hover:after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #fff;
+    padding: 5px 10px;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-size: 12px;
+    z-index: 1000;
+    margin-bottom: 5px;
+}
+
+.wppa-export-buttons {
+    margin-top: 20px;
+}
+
+.wppa-export-buttons .button {
+    margin-right: 10px;
+}
