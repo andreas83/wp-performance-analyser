@@ -291,6 +291,15 @@
 })(jQuery);
 
 jQuery(document).ready(function($) {
+    // Initialize phase chart if data exists
+    if (typeof window.wppaPhaseData !== 'undefined' && window.wppaPhaseData.length > 0) {
+        var ctx = document.getElementById('wppa-phase-chart');
+        if (ctx) {
+            drawPhaseChart(ctx.getContext('2d'), window.wppaPhaseData);
+        }
+    }
+    
+    // Initialize query chart
     $.post(wppa_ajax.ajax_url, {
         action: 'wppa_get_performance_data',
         data_type: 'query-stats',
@@ -311,6 +320,64 @@ jQuery(document).ready(function($) {
         }
     });
 });
+
+function drawPhaseChart(ctx, data) {
+    var canvas = ctx.canvas;
+    var width = canvas.width = canvas.offsetWidth;
+    var height = canvas.height = 300;
+    
+    ctx.clearRect(0, 0, width, height);
+    
+    if (!data || !data.length) {
+        ctx.fillStyle = '#666';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No phase data available', width / 2, height / 2);
+        return;
+    }
+    
+    var maxValue = Math.max(...data.map(d => d.value));
+    var barWidth = (width / data.length) - 20;
+    var scale = (height - 80) / maxValue;
+    var colors = ['#0073aa', '#00a0d2', '#0085ba', '#005177', '#003c56', '#046b99', '#0087be'];
+    
+    data.forEach(function(item, index) {
+        var x = index * (barWidth + 20) + 10;
+        var barHeight = item.value * scale;
+        var y = height - barHeight - 50;
+        
+        // Use different colors for each phase
+        ctx.fillStyle = colors[index % colors.length];
+        ctx.fillRect(x, y, barWidth, barHeight);
+        
+        // Draw phase label
+        ctx.fillStyle = '#333';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.save();
+        ctx.translate(x + barWidth / 2, height - 30);
+        ctx.rotate(-Math.PI / 4);
+        ctx.fillText(item.label, 0, 0);
+        ctx.restore();
+        
+        // Draw timing value
+        ctx.fillStyle = '#333';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(item.value.toFixed(1) + 'ms', x + barWidth / 2, y - 5);
+        
+        // Draw percentage
+        ctx.fillStyle = '#666';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(item.percentage.toFixed(1) + '%', x + barWidth / 2, y - 20);
+    });
+    
+    // Draw title
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('WordPress Loading Phase Performance', width / 2, 20);
+}
 
 function drawQueryChart(ctx, data) {
     var canvas = ctx.canvas;

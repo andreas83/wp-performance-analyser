@@ -26,6 +26,10 @@ class WP_Performance_Analyser {
     private $query_timings = [];
     private $active_plugins = [];
     private $plugin_start_times = [];
+    private $phase_timings = [];
+    private $current_phase = 'init';
+    private $hook_profiler = null;
+    private $detailed_plugin_data = [];
     
     public static function get_instance() {
         if (null === self::$instance) {
@@ -36,6 +40,7 @@ class WP_Performance_Analyser {
     
     private function __construct() {
         $this->start_time = microtime(true);
+        $this->phase_timings['init'] = ['start' => $this->start_time];
         $this->init();
     }
     
@@ -53,9 +58,13 @@ class WP_Performance_Analyser {
         
         add_action('pre_update_option_active_plugins', [$this, 'track_plugin_activation'], 10, 2);
         
-        // Track plugin loading times using a different approach
-        add_action('activated_plugin', [$this, 'track_activated_plugin']);
-        add_action('plugins_loaded', [$this, 'calculate_plugin_load_times'], -10000);
+        // Track WordPress loading phases
+        $this->setup_phase_tracking();
+        
+        // Setup advanced hook profiling if enabled
+        if (get_option('wppa_enable_detailed_profiling', false)) {
+            $this->setup_advanced_hook_profiling();
+        }
         
         $this->setup_query_tracking();
     }
@@ -149,6 +158,57 @@ class WP_Performance_Analyser {
     public function track_activated_plugin($plugin) {
         // Track when a plugin is activated
         $this->plugin_start_times[$plugin] = microtime(true);
+    }
+    
+    private function setup_phase_tracking() {
+        // Hook into major WordPress loading phases
+        add_action('muplugins_loaded', [$this, 'track_phase'], -10000, 0);
+        add_action('plugins_loaded', [$this, 'track_phase'], -10000, 0);
+        add_action('setup_theme', [$this, 'track_phase'], -10000, 0);
+        add_action('after_setup_theme', [$this, 'track_phase'], -10000, 0);
+        add_action('init', [$this, 'track_phase'], -10000, 0);
+        add_action('wp_loaded', [$this, 'track_phase'], -10000, 0);
+        add_action('parse_request', [$this, 'track_phase'], -10000, 0);
+        add_action('wp', [$this, 'track_phase'], -10000, 0);
+        
+        // Track the end of phases with high priority
+        add_action('muplugins_loaded', [$this, 'track_phase_end'], 10000, 0);
+        add_action('plugins_loaded', [$this, 'track_phase_end'], 10000, 0);
+        add_action('setup_theme', [$this, 'track_phase_end'], 10000, 0);
+        add_action('after_setup_theme', [$this, 'track_phase_end'], 10000, 0);
+        add_action('init', [$this, 'track_phase_end'], 10000, 0);
+        add_action('wp_loaded', [$this, 'track_phase_end'], 10000, 0);
+        add_action('parse_request', [$this, 'track_phase_end'], 10000, 0);
+        add_action('wp', [$this, 'track_phase_end'], 10000, 0);
+    }
+    
+    public function track_phase() {
+        $current_hook = current_filter();
+        $current_time = microtime(true);
+        
+        // End the previous phase
+        if ($this->current_phase && !isset($this->phase_timings[$this->current_phase]['end'])) {
+            $this->phase_timings[$this->current_phase]['end'] = $current_time;
+            $this->phase_timings[$this->current_phase]['duration'] = 
+                $current_time - $this->phase_timings[$this->current_phase]['start'];
+        }
+        
+        // Start the new phase
+        $this->current_phase = $current_hook;
+        if (!isset($this->phase_timings[$current_hook])) {
+            $this->phase_timings[$current_hook] = ['start' => $current_time];
+        }
+    }
+    
+    public function track_phase_end() {
+        $current_hook = current_filter();
+        $current_time = microtime(true);
+        
+        if (isset($this->phase_timings[$current_hook]['start']) && !isset($this->phase_timings[$current_hook]['end'])) {
+            $this->phase_timings[$current_hook]['end'] = $current_time;
+            $this->phase_timings[$current_hook]['duration'] = 
+                $current_time - $this->phase_timings[$current_hook]['start'];
+        }
     }
     
     private function setup_query_tracking() {
@@ -327,34 +387,136 @@ class WP_Performance_Analyser {
     }
     
     public function render_plugin_performance_page() {
+        $this->finalize_phase_timings();
+        $detailed_profiling_enabled = get_option('wppa_enable_detailed_profiling', false);
+        $detailed_plugin_data = $this->get_detailed_plugin_data();
+        
         ?>
         <div class="wrap">
-            <h1>Plugin Performance Analysis</h1>
+            <h1>Plugin & Performance Analysis</h1>
             
+            <?php if (!$detailed_profiling_enabled): ?>
             <div class="notice notice-info">
-                <p><strong>Note:</strong> Individual plugin performance tracking is technically challenging in WordPress due to how plugins are loaded. 
-                This feature focuses on overall page performance and database query analysis instead.</p>
-                <p>For detailed performance analysis, please use the main Performance dashboard and Query Analysis pages.</p>
+                <p><strong>Phase-Level Analysis:</strong> This page shows WordPress loading phase performance. 
+                For detailed plugin-level analysis, enable "Advanced Hook Profiling" in 
+                <a href="<?php echo admin_url('admin.php?page=wppa-settings'); ?>">Settings</a>.</p>
+            </div>
+            <?php else: ?>
+            <div class="notice notice-success">
+                <p><strong>Advanced Profiling Active:</strong> Detailed plugin-level performance tracking is enabled. 
+                Note: This may impact site performance and should only be used for debugging.</p>
+            </div>
+            <?php endif; ?>
+            
+            <div class="wppa-phase-performance">
+                <h2>Current Request Phase Timings</h2>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th>Loading Phase</th>
+                            <th>Duration</th>
+                            <th>% of Total</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $total_time = microtime(true) - $this->start_time;
+                        $phase_descriptions = $this->get_phase_descriptions();
+                        
+                        foreach ($this->phase_timings as $phase => $timing): 
+                            if (!isset($timing['duration'])) continue;
+                            $percentage = ($timing['duration'] / $total_time) * 100;
+                        ?>
+                        <tr>
+                            <td><strong><?php echo esc_html($phase); ?></strong></td>
+                            <td><?php echo number_format($timing['duration'] * 1000, 2); ?> ms</td>
+                            <td><?php echo number_format($percentage, 1); ?>%</td>
+                            <td><?php echo esc_html($phase_descriptions[$phase] ?? 'WordPress loading phase'); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
             
-            <h2>Alternative Performance Monitoring</h2>
-            <p>Consider using these approaches for plugin performance analysis:</p>
-            <ul>
-                <li><strong>Query Analysis:</strong> Identify slow database queries and their sources</li>
-                <li><strong>Page Load Times:</strong> Monitor overall page generation times</li>
-                <li><strong>Memory Usage:</strong> Track memory consumption patterns</li>
-                <li><strong>External Tools:</strong> Use profiling tools like Query Monitor, Debug Bar, or New Relic</li>
-            </ul>
+            <div class="wppa-phase-chart">
+                <h2>Phase Performance Visualization</h2>
+                <canvas id="wppa-phase-chart" width="800" height="300"></canvas>
+            </div>
             
-            <p>
-                <a href="<?php echo admin_url('admin.php?page=wp-performance-analyser'); ?>" class="button button-primary">
-                    View Performance Dashboard
-                </a>
-                <a href="<?php echo admin_url('admin.php?page=wppa-query-analysis'); ?>" class="button">
-                    Analyze Database Queries
-                </a>
-            </p>
+            <?php if ($detailed_profiling_enabled && !empty($detailed_plugin_data)): ?>
+            <div class="wppa-detailed-plugin-data">
+                <h2>Detailed Plugin Performance (Current Request)</h2>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th>Plugin/Component</th>
+                            <th>Total Execution Time</th>
+                            <th>Hook Executions</th>
+                            <th>Avg Time per Hook</th>
+                            <th>% of Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $total_all_plugins = array_sum(array_column($detailed_plugin_data, 'total_time'));
+                        foreach ($detailed_plugin_data as $plugin_name => $data): 
+                            $avg_time = $data['hook_count'] > 0 ? $data['total_time'] / $data['hook_count'] : 0;
+                            $percentage = $total_all_plugins > 0 ? ($data['total_time'] / $total_all_plugins) * 100 : 0;
+                        ?>
+                        <tr>
+                            <td><strong><?php echo esc_html($plugin_name); ?></strong></td>
+                            <td><?php echo number_format($data['total_time'] * 1000, 2); ?> ms</td>
+                            <td><?php echo number_format($data['hook_count']); ?></td>
+                            <td><?php echo number_format($avg_time * 1000, 3); ?> ms</td>
+                            <td><?php echo number_format($percentage, 1); ?>%</td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+            
+            <div class="wppa-performance-tips">
+                <h2>Performance Optimization Tips</h2>
+                <?php $slowest_phase = $this->get_slowest_phase(); ?>
+                <?php if ($slowest_phase): ?>
+                <div class="notice notice-warning">
+                    <p><strong>Slowest Phase:</strong> <?php echo esc_html($slowest_phase['phase']); ?> 
+                    (<?php echo number_format($slowest_phase['duration'] * 1000, 2); ?> ms)</p>
+                    <p><?php echo $this->get_phase_optimization_tip($slowest_phase['phase']); ?></p>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($detailed_profiling_enabled && !empty($detailed_plugin_data)): ?>
+                <?php 
+                $slowest_plugin = array_keys($detailed_plugin_data)[0]; // First in sorted array
+                $slowest_plugin_data = $detailed_plugin_data[$slowest_plugin];
+                ?>
+                <div class="notice notice-warning">
+                    <p><strong>Slowest Plugin:</strong> <?php echo esc_html($slowest_plugin); ?> 
+                    (<?php echo number_format($slowest_plugin_data['total_time'] * 1000, 2); ?> ms total, 
+                    <?php echo $slowest_plugin_data['hook_count']; ?> hooks)</p>
+                    <p>Consider reviewing this plugin's hook usage for optimization opportunities.</p>
+                </div>
+                <?php endif; ?>
+                
+                <ul>
+                    <li><strong>plugins_loaded:</strong> Time spent loading and initializing all active plugins</li>
+                    <li><strong>init:</strong> WordPress initialization, theme setup, and plugin init hooks</li>
+                    <li><strong>wp_loaded:</strong> All plugins and WordPress core are fully loaded</li>
+                    <li><strong>parse_request:</strong> WordPress is determining what content to show</li>
+                    <?php if ($detailed_profiling_enabled): ?>
+                    <li><strong>Advanced Profiling:</strong> Hook-level timing shows which plugins use the most processing time</li>
+                    <?php endif; ?>
+                </ul>
+            </div>
         </div>
+        
+        <script>
+        // Pass phase data to JavaScript for chart rendering
+        window.wppaPhaseData = <?php echo json_encode($this->prepare_phase_data_for_chart()); ?>;
+        </script>
         <?php
         return;
         
@@ -568,6 +730,9 @@ class WP_Performance_Analyser {
                 update_option('wppa_savequeries_enabled', $_POST['enable_query_tracking'] === '1');
             }
             
+            // Handle advanced profiling setting
+            update_option('wppa_enable_detailed_profiling', isset($_POST['enable_detailed_profiling']));
+            
             echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
         }
         
@@ -575,6 +740,7 @@ class WP_Performance_Analyser {
         $data_retention = get_option('wppa_data_retention', 30);
         $sample_rate = get_option('wppa_tracking_sample_rate', 100);
         $savequeries_enabled = get_option('wppa_savequeries_enabled', defined('SAVEQUERIES') && SAVEQUERIES);
+        $detailed_profiling_enabled = get_option('wppa_enable_detailed_profiling', false);
         ?>
         <div class="wrap">
             <h1>WP Performance Analyser Settings</h1>
@@ -628,6 +794,19 @@ class WP_Performance_Analyser {
                                     <code>define('SAVEQUERIES', true);</code>
                                 </p>
                             <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="enable_detailed_profiling">Advanced Hook Profiling</label></th>
+                        <td>
+                            <input type="checkbox" id="enable_detailed_profiling" name="enable_detailed_profiling" 
+                                   <?php checked($detailed_profiling_enabled); ?>>
+                            <p class="description">Enable detailed plugin-level performance tracking using hook interception. 
+                            <strong>Warning:</strong> This adds significant overhead and should only be used for debugging purposes.</p>
+                            <p class="description" style="color: #dc3232;">
+                                <strong>Performance Impact:</strong> This feature intercepts ALL WordPress hooks and may slow down your site. 
+                                Only enable temporarily for performance analysis.
+                            </p>
                         </td>
                     </tr>
                 </table>
@@ -837,6 +1016,321 @@ class WP_Performance_Analyser {
         }
     }
     
+    private function finalize_phase_timings() {
+        $current_time = microtime(true);
+        
+        // Finalize the current phase if not already done
+        if ($this->current_phase && !isset($this->phase_timings[$this->current_phase]['end'])) {
+            $this->phase_timings[$this->current_phase]['end'] = $current_time;
+            $this->phase_timings[$this->current_phase]['duration'] = 
+                $current_time - $this->phase_timings[$this->current_phase]['start'];
+        }
+    }
+    
+    private function get_phase_descriptions() {
+        return [
+            'init' => 'Plugin initialization and early WordPress setup',
+            'muplugins_loaded' => 'Must-use plugins loaded and initialized',
+            'plugins_loaded' => 'All regular plugins loaded and initialized',
+            'setup_theme' => 'Active theme functions.php loaded',
+            'after_setup_theme' => 'Theme support features and menus registered',
+            'wp_loaded' => 'WordPress fully loaded, ready to handle requests',
+            'parse_request' => 'Request parsing and query variable setup',
+            'wp' => 'Main query object created and query run'
+        ];
+    }
+    
+    private function get_slowest_phase() {
+        $slowest = null;
+        
+        foreach ($this->phase_timings as $phase => $timing) {
+            if (isset($timing['duration'])) {
+                if (!$slowest || $timing['duration'] > $slowest['duration']) {
+                    $slowest = ['phase' => $phase, 'duration' => $timing['duration']];
+                }
+            }
+        }
+        
+        return $slowest;
+    }
+    
+    private function get_phase_optimization_tip($phase) {
+        $tips = [
+            'muplugins_loaded' => 'Consider reviewing must-use plugins for performance impact.',
+            'plugins_loaded' => 'This phase loads all active plugins. Consider deactivating unused plugins or using a plugin like Query Monitor to identify slow plugins.',
+            'setup_theme' => 'Check your theme\'s functions.php file for heavy operations that could be optimized or cached.',
+            'after_setup_theme' => 'Review theme setup hooks and consider lazy loading of theme features.',
+            'init' => 'Many plugins hook into init. Consider if some operations can be deferred to later hooks.',
+            'wp_loaded' => 'All core components are loaded. Heavy operations after this point may indicate inefficient plugin code.',
+            'parse_request' => 'Slow request parsing may indicate complex rewrite rules or URL structures.',
+            'wp' => 'Main query execution. Consider optimizing database queries and caching strategies.'
+        ];
+        
+        return $tips[$phase] ?? 'Consider profiling this phase further to identify specific bottlenecks.';
+    }
+    
+    private function prepare_phase_data_for_chart() {
+        $chart_data = [];
+        $total_time = microtime(true) - $this->start_time;
+        
+        foreach ($this->phase_timings as $phase => $timing) {
+            if (isset($timing['duration'])) {
+                $chart_data[] = [
+                    'label' => $phase,
+                    'value' => $timing['duration'] * 1000, // Convert to ms
+                    'percentage' => ($timing['duration'] / $total_time) * 100
+                ];
+            }
+        }
+        
+        return $chart_data;
+    }
+    
+    private function setup_advanced_hook_profiling() {
+        $this->hook_profiler = new WPPA_Hook_Profiler();
+        add_action('all', [$this->hook_profiler, 'profile_hook'], -10000);
+    }
+    
+    public function get_detailed_plugin_data() {
+        if ($this->hook_profiler) {
+            return $this->hook_profiler->get_plugin_performance_data();
+        }
+        return [];
+    }
+    
+}
+
+/**
+ * Advanced Hook Profiler Class
+ * Uses the 'all' hook to intercept every WordPress action and filter
+ */
+class WPPA_Hook_Profiler {
+    private $hook_timings = [];
+    private $current_hooks = [];
+    private $plugin_cache = [];
+    
+    public function profile_hook() {
+        $hook_name = current_filter();
+        $start_time = microtime(true);
+        
+        // Skip our own hooks to avoid recursion
+        if (strpos($hook_name, 'wppa_') === 0) {
+            return;
+        }
+        
+        // Track hook start time
+        $hook_id = $hook_name . '_' . count($this->current_hooks);
+        $this->current_hooks[$hook_id] = [
+            'hook' => $hook_name,
+            'start' => $start_time,
+            'callbacks' => $this->get_hook_callbacks($hook_name)
+        ];
+        
+        // Set up completion tracking
+        add_action($hook_name, [$this, 'complete_hook_profiling'], PHP_INT_MAX);
+    }
+    
+    public function complete_hook_profiling() {
+        $hook_name = current_filter();
+        $end_time = microtime(true);
+        
+        // Find the matching start entry
+        foreach ($this->current_hooks as $hook_id => $data) {
+            if ($data['hook'] === $hook_name && !isset($data['end'])) {
+                $duration = $end_time - $data['start'];
+                
+                // Store the timing data
+                if (!isset($this->hook_timings[$hook_name])) {
+                    $this->hook_timings[$hook_name] = [];
+                }
+                
+                $this->hook_timings[$hook_name][] = [
+                    'duration' => $duration,
+                    'callbacks' => $data['callbacks'],
+                    'timestamp' => $data['start']
+                ];
+                
+                $this->current_hooks[$hook_id]['end'] = $end_time;
+                break;
+            }
+        }
+    }
+    
+    private function get_hook_callbacks($hook_name) {
+        global $wp_filter;
+        
+        if (!isset($wp_filter[$hook_name])) {
+            return [];
+        }
+        
+        $callbacks = [];
+        foreach ($wp_filter[$hook_name]->callbacks as $priority => $priority_callbacks) {
+            foreach ($priority_callbacks as $callback_data) {
+                $callback_info = $this->analyze_callback($callback_data['function']);
+                if ($callback_info) {
+                    $callbacks[] = $callback_info;
+                }
+            }
+        }
+        
+        return $callbacks;
+    }
+    
+    private function analyze_callback($callback) {
+        try {
+            if (is_array($callback)) {
+                // Object method: [$object, 'method']
+                if (is_object($callback[0])) {
+                    $reflection = new ReflectionMethod($callback[0], $callback[1]);
+                    return [
+                        'type' => 'method',
+                        'class' => get_class($callback[0]),
+                        'method' => $callback[1],
+                        'file' => $reflection->getFileName(),
+                        'line' => $reflection->getStartLine(),
+                        'plugin' => $this->identify_plugin_from_file($reflection->getFileName())
+                    ];
+                } elseif (is_string($callback[0])) {
+                    // Static method: ['ClassName', 'method']
+                    $reflection = new ReflectionMethod($callback[0], $callback[1]);
+                    return [
+                        'type' => 'static_method',
+                        'class' => $callback[0],
+                        'method' => $callback[1],
+                        'file' => $reflection->getFileName(),
+                        'line' => $reflection->getStartLine(),
+                        'plugin' => $this->identify_plugin_from_file($reflection->getFileName())
+                    ];
+                }
+            } elseif (is_string($callback)) {
+                // Function name
+                $reflection = new ReflectionFunction($callback);
+                return [
+                    'type' => 'function',
+                    'function' => $callback,
+                    'file' => $reflection->getFileName(),
+                    'line' => $reflection->getStartLine(),
+                    'plugin' => $this->identify_plugin_from_file($reflection->getFileName())
+                ];
+            } elseif ($callback instanceof Closure) {
+                // Anonymous function/closure
+                $reflection = new ReflectionFunction($callback);
+                return [
+                    'type' => 'closure',
+                    'file' => $reflection->getFileName(),
+                    'line' => $reflection->getStartLine(),
+                    'plugin' => $this->identify_plugin_from_file($reflection->getFileName())
+                ];
+            }
+        } catch (ReflectionException $e) {
+            // Handle cases where reflection fails
+            return [
+                'type' => 'unknown',
+                'error' => $e->getMessage(),
+                'plugin' => 'Unknown'
+            ];
+        }
+        
+        return null;
+    }
+    
+    private function identify_plugin_from_file($file_path) {
+        if (!$file_path || $file_path === false) {
+            return 'Unknown';
+        }
+        
+        // Cache results to avoid repeated filesystem operations
+        if (isset($this->plugin_cache[$file_path])) {
+            return $this->plugin_cache[$file_path];
+        }
+        
+        // Check if file is in plugins directory
+        $plugins_dir = WP_PLUGIN_DIR;
+        if (strpos($file_path, $plugins_dir) === 0) {
+            $relative_path = str_replace($plugins_dir . '/', '', $file_path);
+            $path_parts = explode('/', $relative_path);
+            $plugin_folder = $path_parts[0];
+            
+            // Try to get plugin name from plugin file
+            $plugin_file = $plugins_dir . '/' . $plugin_folder . '/' . $plugin_folder . '.php';
+            if (!file_exists($plugin_file)) {
+                // Look for main plugin file
+                $files = glob($plugins_dir . '/' . $plugin_folder . '/*.php');
+                foreach ($files as $file) {
+                    $plugin_data = get_file_data($file, ['Name' => 'Plugin Name']);
+                    if (!empty($plugin_data['Name'])) {
+                        $plugin_file = $file;
+                        break;
+                    }
+                }
+            }
+            
+            if (file_exists($plugin_file)) {
+                $plugin_data = get_file_data($plugin_file, ['Name' => 'Plugin Name']);
+                $plugin_name = !empty($plugin_data['Name']) ? $plugin_data['Name'] : $plugin_folder;
+            } else {
+                $plugin_name = $plugin_folder;
+            }
+            
+            $this->plugin_cache[$file_path] = $plugin_name;
+            return $plugin_name;
+        }
+        
+        // Check if it's a theme file
+        $themes_dir = get_theme_root();
+        if (strpos($file_path, $themes_dir) === 0) {
+            $this->plugin_cache[$file_path] = 'Active Theme';
+            return 'Active Theme';
+        }
+        
+        // Check if it's WordPress core
+        if (strpos($file_path, ABSPATH) === 0 && strpos($file_path, '/wp-includes/') !== false) {
+            $this->plugin_cache[$file_path] = 'WordPress Core';
+            return 'WordPress Core';
+        }
+        
+        $this->plugin_cache[$file_path] = 'Unknown';
+        return 'Unknown';
+    }
+    
+    public function get_plugin_performance_data() {
+        $plugin_totals = [];
+        
+        foreach ($this->hook_timings as $hook_name => $executions) {
+            foreach ($executions as $execution) {
+                foreach ($execution['callbacks'] as $callback) {
+                    $plugin = $callback['plugin'];
+                    
+                    if (!isset($plugin_totals[$plugin])) {
+                        $plugin_totals[$plugin] = [
+                            'total_time' => 0,
+                            'hook_count' => 0,
+                            'hooks' => []
+                        ];
+                    }
+                    
+                    $plugin_totals[$plugin]['total_time'] += $execution['duration'];
+                    $plugin_totals[$plugin]['hook_count']++;
+                    
+                    if (!isset($plugin_totals[$plugin]['hooks'][$hook_name])) {
+                        $plugin_totals[$plugin]['hooks'][$hook_name] = 0;
+                    }
+                    $plugin_totals[$plugin]['hooks'][$hook_name] += $execution['duration'];
+                }
+            }
+        }
+        
+        // Sort by total time (descending)
+        uasort($plugin_totals, function($a, $b) {
+            return $b['total_time'] <=> $a['total_time'];
+        });
+        
+        return $plugin_totals;
+    }
+    
+    public function get_hook_timings() {
+        return $this->hook_timings;
+    }
 }
 
 function wppa_init() {
@@ -902,3 +1396,10 @@ add_action('wppa_cleanup_old_data', function() {
         $retention_days
     ));
 });
+
+// Helper methods for the WP_Performance_Analyser class
+if (!function_exists('wppa_add_helper_methods')) {
+    function wppa_add_helper_methods() {
+        // These methods will be added to the class above
+    }
+}
