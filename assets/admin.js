@@ -219,6 +219,75 @@
         });
     });
 
+    // Query detail modal handlers
+    $(document).on('click', '.wppa-view-query-details', function(e) {
+        e.preventDefault();
+        
+        var $this = $(this);
+        var query = atob($this.data('query'));
+        var caller = $this.data('caller');
+        var time = $this.data('time');
+        
+        // Format the query for better readability
+        var formattedQuery = formatSQL(query);
+        
+        $('.wppa-query-time').text((time * 1000).toFixed(2) + ' ms');
+        $('.wppa-query-full').text(formattedQuery);
+        $('.wppa-query-stack').text(caller.replace(/,/g, '\n'));
+        
+        $('#wppa-query-modal').fadeIn();
+    });
+    
+    $(document).on('click', '.wppa-view-stack-trace', function(e) {
+        e.preventDefault();
+        
+        var trace = atob($(this).data('trace'));
+        var formattedTrace = formatStackTrace(trace);
+        
+        $('.wppa-query-time').text('');
+        $('.wppa-query-full').text('');
+        $('.wppa-query-stack').text(formattedTrace);
+        
+        $('#wppa-query-modal').fadeIn();
+    });
+    
+    $(document).on('click', '.wppa-modal-close, .wppa-modal', function(e) {
+        if (e.target === this) {
+            $('#wppa-query-modal').fadeOut();
+        }
+    });
+    
+    function formatSQL(query) {
+        // Basic SQL formatting for readability
+        return query
+            .replace(/SELECT/gi, 'SELECT\n  ')
+            .replace(/FROM/gi, '\nFROM\n  ')
+            .replace(/WHERE/gi, '\nWHERE\n  ')
+            .replace(/AND/gi, '\n  AND')
+            .replace(/OR/gi, '\n  OR')
+            .replace(/JOIN/gi, '\nJOIN\n  ')
+            .replace(/LEFT JOIN/gi, '\nLEFT JOIN\n  ')
+            .replace(/RIGHT JOIN/gi, '\nRIGHT JOIN\n  ')
+            .replace(/INNER JOIN/gi, '\nINNER JOIN\n  ')
+            .replace(/ORDER BY/gi, '\nORDER BY\n  ')
+            .replace(/GROUP BY/gi, '\nGROUP BY\n  ')
+            .replace(/HAVING/gi, '\nHAVING\n  ')
+            .replace(/LIMIT/gi, '\nLIMIT ')
+            .replace(/,/g, ',\n  ');
+    }
+    
+    function formatStackTrace(trace) {
+        // Format stack trace for better readability
+        var lines = trace.split(',');
+        var formatted = [];
+        
+        lines.forEach(function(line, index) {
+            formatted.push((index + 1) + '. ' + line.trim());
+        });
+        
+        return formatted.join('\n');
+    }
+
 })(jQuery);
 
 jQuery(document).ready(function($) {
